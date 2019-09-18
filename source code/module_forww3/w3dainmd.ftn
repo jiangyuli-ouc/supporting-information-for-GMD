@@ -1,0 +1,301 @@
+#include "w3macros.h"
+!---------------------------------------------------------------------/
+      MODULE W3DAINMD
+!
+!---------------------------------------------------------------------/
+!
+      LOGICAL               :: ASSI_SWITCH  = .FALSE.
+!
+      LOGICAL               :: SATE_SWITCH  = .FALSE.
+      CHARACTER(LEN=6)      :: SATE_TYPE    = 'SATE'
+      INTEGER               :: SATE_CYCLE   = 1
+      INTEGER               :: SATE_NUMBER  = 3
+      INTEGER               :: SATE_TIMES   = 1
+      REAL                  :: SATE_RADIUS  = 500
+      REAL                  :: SATE_LENGTH  = 200
+      INTEGER               :: SATE_GRID    = 20
+      CHARACTER(LEN=15)     :: SATE_SITE_FILE     = 'sate_site.dat'
+      CHARACTER(LEN=15)     :: SATE_VALUE_FILE    = 'sate_value.dat'
+      CHARACTER(LEN=15)     :: SATE_COR1_FILE     = 'coef_1_p1.dat'
+      CHARACTER(LEN=15)     :: SATE_COR2_FILE     = 'coef_1_p2.dat'
+      CHARACTER(LEN=15)     :: SATE_COR3_FILE     = 'coef_1_p3.dat'
+      CHARACTER(LEN=15)     :: SATE_COR4_FILE     = 'coef_1_p4.dat'
+      CHARACTER(LEN=15)     :: SATE_STD_FILE      = 'coef_1_std.dat'
+      CHARACTER(LEN=15)     :: SATE_WND_FILE      = 'kb_1_wnd.dat'
+!
+      REAL                  :: RMSE_OBS     = 0.3
+      REAL                  :: RMSE_MODEL   = 0.3  
+!
+      INTEGER               :: SATE_TIME_BEGIN1  = 20080801
+      INTEGER               :: SATE_TIME_BEGIN2  = 000000
+!
+      LOGICAL               :: SWITCH_SPEC  = .FALSE.
+      LOGICAL               :: SWITCH_WIND  = .FALSE.
+      REAL                  :: CHANGE_ALPHA = 1.0
+!
+      INTEGER,ALLOCATABLE            :: SATE_TIME1(:), SATE_TIME2(:)
+      REAL,ALLOCATABLE               :: SATE_LON(:,:), SATE_LAT(:,:)
+      CHARACTER(LEN=15),ALLOCATABLE  :: SATE_NAMES(:,:)
+      INTEGER,ALLOCATABLE            :: SATE_SITE_TIME(:,:)
+!--------------------------------------------------------------------/
+      NAMELIST /ASSI_SWITCH_NML/ ASSI_SWITCH
+      NAMELIST /SATE_NML/ SATE_SWITCH, SATE_TYPE, SATE_CYCLE, SATE_NUMBER, &
+                          SATE_TIMES, SATE_RADIUS, SATE_LENGTH, SATE_GRID, &
+                          SATE_SITE_FILE, SATE_VALUE_FILE, SATE_COR1_FILE, &
+                          SATE_COR2_FILE, SATE_COR3_FILE, SATE_COR4_FILE,  &
+                          SATE_STD_FILE, SATE_WND_FILE
+      NAMELIST /RMSE_NML/ RMSE_OBS, RMSE_MODEL
+      NAMELIST /SATE_TIME_NML/ SATE_TIME_BEGIN1, SATE_TIME_BEGIN2
+      NAMELIST /SATE_SWITCH_NML/ SWITCH_SPEC, SWITCH_WIND, CHANGE_ALPHA
+!
+      CONTAINS
+!---------------------------------------------------------------------/
+SUBROUTINE W3DAIN ( IO_NML )
+!---------------------------------------------------------------------/
+      USE W3ODATMD, ONLY : IAPROC, NAPOUT
+!
+      IMPLICIT NONE
+!
+!/MPI INCLUDE "mpif.h"
+!----------------------------------------------------------------------/
+!
+!PARAMETER LIST
+      LOGICAL,INTENT(INOUT)          :: IO_NML
+!LOCAL PARAMETER
+      INTEGER                        :: J
+      INTEGER                        :: IO_ASSI         = 4
+      INTEGER                        :: IO_SATE         = 5
+      INTEGER                        :: IO_RMSE         = 7
+      INTEGER                        :: IO_SATE_TIME    = 8  
+      INTEGER                        :: IO_SATE_SWITCH  = 10
+!-----------------------------------------------------------------------/
+    IF (IO_NML) THEN
+       OPEN(100,FILE='input.nml')
+       READ(100,NML=ASSI_SWITCH_NML,IOSTAT=IO_ASSI)
+       IF ( IO_ASSI .LE. 0 ) THEN
+          IF ( IAPROC .EQ. NAPOUT ) THEN
+             WRITE(*,"(40X)")
+             WRITE(*,*) '----------------------------------------------------'
+             WRITE(*,*) 'ASSIMILATION TOTAL SWITCH IS ',ASSI_SWITCH
+             WRITE(*,"(40X)")
+          ENDIF
+       ELSE
+          IF ( IAPROC .EQ. NAPOUT ) THEN
+             WRITE(*,"(40X)")
+             WRITE(*,*) 'SORRY, ERROR IN READING ASSI_NML'
+          ENDIF
+          RETURN
+       ENDIF
+       READ(100,NML=SATE_NML,IOSTAT=IO_SATE)
+       IF( IO_SATE .LE. 0 ) THEN
+          IF( .NOT. SATE_SWITCH ) THEN 
+             IF ( IAPROC .EQ. NAPOUT ) THEN
+                WRITE(*,"(40X)")
+                WRITE(*,*) '----------------------------------------------------'
+                WRITE(*,*) 'SATELLITE SWITCH IS OFF'
+                WRITE(*,"(40X)") 
+             ENDIF
+          ELSE
+             IF ( IAPROC .EQ. NAPOUT ) THEN 
+                WRITE(*,*) '----------------------------------------------------'
+                WRITE(*,*) 'SATE_NML INPUTS ARE:'
+                WRITE(*,*) 'SATELLITE ASSIMILATION SWITCH IS',SATE_SWITCH
+                WRITE(*,*) 'ASSIMILATION TYPE IS ', SATE_TYPE
+                WRITE(*,*) 'EVERY TIME, HAS', SATE_CYCLE, 'POINT TO ASSIMILATION'
+                WRITE(*,*) 'IN SATELLITE ASSIMILATION, ASSIMILATION TIMES IS',SATE_TIMES
+                WRITE(*,*) 'HAVE',SATE_NUMBER,'SATELLITE TO ASSIMILATION'
+                WRITE(*,*) 'THE INFLUENCE RADIUS IS',SATE_RADIUS
+                WRITE(*,*) 'CHARACTERISTIC LENGTH IS',SATE_LENGTH
+                WRITE(*,*) 'THE INFLUENCE NUMBERS OF GRID IS',SATE_GRID
+                WRITE(*,*) 'READ THE ASSIMILATION LOCATION FROM ',SATE_SITE_FILE
+                WRITE(*,*) 'READ ASSIMILATION VALUE FROM ',SATE_VALUE_FILE
+                WRITE(*,*) 'READ CORRELATION INDEX1 FROM ',SATE_COR1_FILE
+                WRITE(*,*) 'READ CORRELATION INDEX2 FROM ',SATE_COR2_FILE
+                WRITE(*,*) 'READ CORRELATION INDEX3 FROM ',SATE_COR3_FILE
+                WRITE(*,*) 'READ CORRELATION INDEX4 FROM ',SATE_COR4_FILE
+                WRITE(*,*) 'READ STABDARD DEVIATION FROM ',SATE_STD_FILE
+                WRITE(*,*) 'READ WND KB FROM ',SATE_WND_FILE
+             ENDIF
+          ENDIF
+       ELSE
+          IF ( IAPROC .EQ. NAPOUT ) THEN
+             WRITE(*,"(40X)")
+             WRITE(*,*) 'SORRY, ERROR IN READING SATE_NML'
+          ENDIF
+          RETURN
+       ENDIF
+       READ(100,NML=RMSE_NML,IOSTAT=IO_RMSE)
+       IF ( IO_RMSE .LE. 0 ) THEN
+          IF ( IAPROC .EQ. NAPOUT ) THEN
+             WRITE(*,"(40X)")
+             WRITE(*,*) '----------------------------------------------------'
+             WRITE(*,*) 'RMSE_NML INPUTS ARE:'
+             WRITE(*,*) 'THE OBSERVATION RMSE IS ',RMSE_OBS
+             WRITE(*,*) 'THE MODEL RMSE IS ',RMSE_MODEL
+          ENDIF
+       ELSE
+          IF ( IAPROC .EQ. NAPOUT ) THEN
+             WRITE(*,"(40X)")
+             WRITE(*,*) 'SORRY, ERROR IN READING RMSE_NML'
+          ENDIF
+          RETURN
+       ENDIF
+       IF( SATE_SWITCH ) THEN 
+          READ(100,NML=SATE_TIME_NML,IOSTAT=IO_SATE_TIME)         
+          IF( IO_SATE_TIME .LE. 0 ) THEN
+             IF ( IAPROC .EQ. NAPOUT ) THEN
+                WRITE(*,"(40X)")
+                WRITE(*,*) '----------------------------------------------------'
+                WRITE(*,*) 'SATE_TIME_NML INPUTS ARE:'
+                WRITE(*,*) 'SATELLITE ASSIMILATION BEGINS FROM ',SATE_TIME_BEGIN1, SATE_TIME_BEGIN2
+                WRITE(*,"(40X)")
+             ENDIF
+          ELSE
+             IF( IAPROC .EQ. NAPOUT ) THEN
+                WRITE(*,"(40X)")
+                WRITE(*,*) 'SORRY, ERROR IN READING SATE_TIME_NML'
+             ENDIF
+             RETURN
+          ENDIF
+       ENDIF
+!
+       SATE_TIME_BEGIN(1,1)=SATE_TIME_BEGIN1
+       SATE_TIME_BEGIN(1,2)=SATE_TIME_BEGIN2
+       IF( SATE_SWITCH ) THEN
+          READ(100,NML=SATE_SWITCH_NML,IOSTAT=IO_SATE_SWITCH)
+          IF( IO_SATE_SWITCH .LE. 0 ) THEN
+             IF ( IAPROC .EQ. NAPOUT ) THEN
+                WRITE(*,"(40X)")
+                WRITE(*,*) '----------------------------------------------------'
+                WRITE(*,*) 'SATE_SWITCH_NML INPUTS ARE:'
+                WRITE(*,*) 'ASSIMILATING SPECTRUM SWITCH IS',SWITCH_SPEC
+                WRITE(*,*) 'ASSIMILATING WIND SWITCH IS',SWITCH_WIND
+                WRITE(*,*) 'IF ASSIMILATING WIND, ALPHA IS',CHANGE_ALPHA
+                WRITE(*,"(40X)")
+             ENDIF
+          ELSE
+             IF( IAPROC .EQ. NAPOUT ) THEN
+                WRITE(*,"(40X)")
+                WRITE(*,*) 'SORRY, ERROR IN READING SATE_SIWTCH_NML'
+             ENDIF
+             RETURN
+          ENDIF
+       ENDIF
+!
+       CLOSE(100)
+    IF( IO_ASSI .LE. 0 .AND. IO_SATE .AND. IO_RMSE .LE. 0 &
+        .AND. IO_SATE_TIME .LE. 0  &
+        .AND. IO_SATE_SWITCH .LE.0 ) IO_NML = .FALSE.
+       IF ( SATE_SWITCH ) THEN
+          CALL GET_SATE_SITE                       
+       ENDIF
+!
+    ENDIF
+!
+    RETURN
+           
+!--------------------------------------------------------------------/
+END SUBROUTINE W3DAIN
+!----------------------------------------------------------------------------
+SUBROUTINE GET_SATE_SITE
+      USE W3GDATMD, ONLY : FLAGLL
+      USE W3ODATMD, ONLY : IAPROC, NAPOUT
+!---------------------------------------------------------------------/
+       IMPLICIT NONE
+!
+!--------------------------------------------------------------------/
+       INTEGER        :: NDWA = 90
+       INTEGER        :: J, K, M, NUM, NU
+       REAL           :: FACTOR
+!--------------------------------------------------------------------/
+       IF(ALLOCATED(SATE_SITE_TIME)) DEALLOCATE(SATE_SITE_TIME)
+       IF(ALLOCATED(SATE_LON))   DEALLOCATE(SATE_LON)
+       IF(ALLOCATED(SATE_LAT))   DEALLOCATE(SATE_LAT)
+       IF(ALLOCATED(SATE_NAMES)) DEALLOCATE(SATE_NAMES)
+       ALLOCATE(SATE_SITE_TIME(2,SATE_TIMES))
+       ALLOCATE(SATE_LON(SATE_TIMES*SATE_CYCLE,SATE_NUMBER))
+       ALLOCATE(SATE_LAT(SATE_TIMES*SATE_CYCLE,SATE_NUMBER))
+       ALLOCATE(SATE_NAMES(SATE_TIMES*SATE_CYCLE,SATE_NUMBER))
+!
+       IF( FLAGLL ) THEN
+          FACTOR = 1.
+       ELSE
+          FACTOR = 1.E-3
+       ENDIF
+       OPEN(NDWA,FILE=SATE_SITE_FILE,STATUS='OLD')
+!
+       NU=1
+       NUM=1
+       DO J=1,SATE_TIMES*(SATE_CYCLE+1) 
+          IF( MOD(J,SATE_CYCLE+1) .EQ. 1 ) THEN
+              READ(NDWA,*) SATE_SITE_TIME(1,NU), SATE_SITE_TIME(2,NU)
+              NU=NU+1
+          ELSE
+              READ(NDWA,*) ( (SATE_LON(NUM,K), SATE_LAT(NUM,K), SATE_NAMES(NUM,K)), K=1,SATE_NUMBER )
+              NUM=NUM+1
+          ENDIF
+       ENDDO
+       CLOSE(NDWA)
+       IF( NU-1 .NE. SATE_TIMES .OR. NUM-1 .NE. SATE_TIMES*SATE_CYCLE ) THEN
+          IF( IAPROC .EQ. NAPOUT ) WRITE(*,*) 'ERROR! PLEASE CHECK READING SATELLITE OBS DATA'
+       ENDIF
+       SATE_LON(:,:) = SATE_LON(:,:) * FACTOR
+       SATE_LAT(:,:) = SATE_LAT(:,:) * FACTOR
+       IF ( IAPROC .EQ. NAPOUT ) THEN 
+          WRITE(*,*) 'THERE ARE ',SATE_TIMES,'TIMES IN THE SATELLITE FILE'
+          WRITE(*,"(40X)")
+          WRITE(*,*) 'FINISHED IN OPENING SATELLITE LOCATION FILE'
+       ENDIF
+!
+       RETURN
+!
+END SUBROUTINE GET_SATE_SITE
+!--------------------------------------------------------------------/
+SUBROUTINE GET_SATE_LOCAL( SATE_LON_LOCAL, SATE_LAT_LOCAL, SATE_NAMES_LOCAL, &
+                           SATE_ASSI_TIME )
+!--------------------------------------------------------------------/
+       USE W3TIMEMD, ONLY: DSEC21
+       USE W3WDATMD, ONLY: TIME
+       USE W3ODATMD, ONLY: IAPROC, NAPOUT
+!
+       IMPLICIT NONE
+!
+       REAL,ALLOCATABLE,INTENT(INOUT)               :: SATE_LON_LOCAL(:,:)
+       REAL,ALLOCATABLE,INTENT(INOUT)               :: SATE_LAT_LOCAL(:,:)
+       CHARACTER(LEN=15),ALLOCATABLE,INTENT(INOUT)  :: SATE_NAMES_LOCAL(:,:)
+       INTEGER,INTENT(INOUT)                        :: SATE_ASSI_TIME(1,2)
+!
+       INTEGER                          :: J, K, Q
+       INTEGER                          :: ASSI_TIME(1,2)
+!
+      IF(ALLOCATED(SATE_LON_LOCAL))    DEALLOCATE(SATE_LON_LOCAL)
+      IF(ALLOCATED(SATE_LAT_LOCAL))    DEALLOCATE(SATE_LAT_LOCAL)
+      IF(ALLOCATED(SATE_NAMES_LOCAL))  DEALLOCATE(SATE_NAMES_LOCAL)
+      ALLOCATE(SATE_LON_LOCAL(SATE_CYCLE, SATE_NUMBER))
+      ALLOCATE(SATE_LAT_LOCAL(SATE_CYCLE, SATE_NUMBER))
+      ALLOCATE(SATE_NAMES_LOCAL(SATE_CYCLE, SATE_NUMBER))
+!
+      DO J=1,SATE_TIMES
+         ASSI_TIME(1,1) = SATE_SITE_TIME(1,J)
+         ASSI_TIME(1,2) = SATE_SITE_TIME(2,J)
+         IF( DSEC21(TIME,ASSI_TIME) .EQ. 0 ) THEN
+             SATE_ASSI_TIME(1,1) = SATE_SITE_TIME(1,J)
+             SATE_ASSI_TIME(1,2) = SATE_SITE_TIME(2,J)
+!
+             DO K=1, SATE_CYCLE
+                SATE_LON_LOCAL(K,:)  = SATE_LON  ((J-1)*SATE_CYCLE+K,:)
+                SATE_LAT_LOCAL(K,:)  = SATE_LAT  ((J-1)*SATE_CYCLE+K,:)
+                SATE_NAMES_LOCAL(K,:)= SATE_NAMES((J-1)*SATE_CYCLE+K,:)
+             ENDDO
+             EXIT
+         ELSE
+             SATE_ASSI_TIME(1,1)   = -999
+         ENDIF
+!
+      ENDDO
+!
+      RETURN
+!
+END SUBROUTINE GET_SATE_LOCAL
+!--------------------------------------------------------------------/
+END MODULE W3DAINMD

@@ -1,0 +1,421 @@
+!---------------------------------------------------------------------/
+      SUBROUTINE ASS_CAL ( COMPDA, OURQT, 
+     &                     ASSI_NAME, AC2, ASSI_LON, ASSI_LAT,
+     &                     ASSI_NAMES, DATA0, ASSI_CYCLE, ASSI_NUMBER,
+     &                     ASSI_RADIUS, ASSI_LENGTH, ASSI_GRID )
+!---------------------------------------------------------------------/
+      USE M_PARALL, ONLY : IAMMASTER, INODE
+      USE SWCOMM3,  ONLY : MDC, MSC, MCGRD, XCLEN, YCLEN, DX, DY
+      USE ASSI_READY, ONLY : MXS1, MYS1
+      USE W3DAINMD,   ONLY : SWITCH_WIND, SWITCH_SPEC
+      USE W3WINDMD
+!
+      IMPLICIT NONE
+!----------------------------------------------------------------------/
+!PARAMETER LIST
+      REAL,INTENT(INOUT)           :: COMPDA(MCGRD, 28) 
+      REAL*8,INTENT(IN)            :: OURQT(250)
+      INTEGER,INTENT(IN)           :: ASSI_CYCLE, ASSI_NUMBER
+      REAL,INTENT(IN)              :: ASSI_RADIUS, ASSI_LENGTH
+      INTEGER,INTENT(IN)           :: ASSI_GRID
+      CHARACTER(LEN=4),INTENT(IN)  :: ASSI_NAME
+      REAL,INTENT(INOUT)           :: AC2(MDC,MSC,MCGRD)
+      REAL,INTENT(IN)              :: ASSI_LON(ASSI_CYCLE,ASSI_NUMBER)
+      REAL,INTENT(IN)              :: ASSI_LAT(ASSI_CYCLE,ASSI_NUMBER)
+      CHARACTER(LEN=15),INTENT(IN) :: ASSI_NAMES(ASSI_CYCLE,ASSI_NUMBER)
+      REAL,INTENT(IN)              :: DATA0(ASSI_CYCLE,ASSI_NUMBER)
+!
+      REAL,ALLOCATABLE             :: TDATA(:,:)
+!
+      IF(ALLOCATED(TDATA)) DEALLOCATE(TDATA)
+      ALLOCATE ( TDATA(ASSI_CYCLE, ASSI_NUMBER ) )
+      TDATA = DATA0(:,:)
+      IF( IAMMASTER ) WRITE (*,1001)  ASSI_NUMBER, ASSI_CYCLE
+ 1001 FORMAT ( 'DATA ASSIMILATION INFORMATION : '/
+     &         '        DATA ASSIMILATION TYPE: MEAN PARS.' /
+     &         '                DATA STRUCTION:',I8,I8        )
+!
+      MXS1 = INT(XCLEN/DX) + 1
+      MYS1 = INT(YCLEN/DY) + 1
+!
+      CALL AL_SPACE
+!
+      CALL GET_HS(COMPDA, OURQT, AC2,
+     &            TDATA, ASSI_LON, ASSI_LAT, ASSI_NAMES,ASSI_CYCLE, 
+     &            ASSI_NUMBER, ASSI_RADIUS, ASSI_LENGTH, ASSI_GRID)
+!
+      IF( SWITCH_SPEC ) THEN
+          CALL CHANGE_SPECTRUM(AC2)
+      ENDIF
+!
+      IF(ALLOCATED(TDATA)) DEALLOCATE(TDATA)
+      CALL DE_SPACE
+!
+      RETURN
+!
+      END SUBROUTINE ASS_CAL
+!--------------------------------------------------------------------/
+      SUBROUTINE GET_HS( COMPDA, OURQT, AC2,
+     &                  TDATA, ASSI_LON, ASSI_LAT, ASSI_NAMES, 
+     &                  ASSI_CYCLE, ASSI_NUMBER, ASSI_RADIUS,
+     &                  ASSI_LENGTH, ASSI_GRID )
+!
+      USE ASSI_READY
+      USE SWCOMM3,  ONLY : XPC, YPC, DX, DY, MDC, MSC, MCGRD, MXC, MYC,
+     &                     XCLEN, YCLEN
+      USE M_PARALL, ONLY : IAMMASTER, INODE, MXCGL, MYCGL, KGRPGL
+      USE M_GENARR, ONLY : XCGRID, YCGRID, SPCSIG, SPCDIR, KGRPNT, XYTST
+      USE MPI
+      USE W3DAINMD
+      USE OUTP_DATA
+!
+      IMPLICIT NONE
+!
+      REAL,INTENT(IN)       :: COMPDA(MCGRD, 28) 
+      REAL*8,INTENT(IN)     :: OURQT(250)
+      REAL,INTENT(INOUT)    :: AC2(MDC,MSC,MCGRD)
+      INTEGER,INTENT(IN)    :: ASSI_GRID,ASSI_CYCLE, ASSI_NUMBER
+      REAL,INTENT(IN)       :: ASSI_RADIUS, ASSI_LENGTH
+      REAL,INTENT(IN)       :: TDATA(ASSI_CYCLE,ASSI_NUMBER)
+      REAL,INTENT(IN)       :: ASSI_LON(ASSI_CYCLE,ASSI_NUMBER)
+      REAL,INTENT(IN)       :: ASSI_LAT(ASSI_CYCLE,ASSI_NUMBER)
+      CHARACTER(LEN=15),INTENT(IN) :: ASSI_NAMES(ASSI_CYCLE,ASSI_NUMBER)
+!LOCAL PARAMETER
+!
+      INTEGER               :: I, J, K, M, Q, MASK
+      INTEGER               :: IX_1, IY_1
+      REAL                  :: HS_INCR
+      REAL                  :: DISTANCE
+      LOGICAL               :: STPNOW
+      REAL                  :: SATE_INDEX, SATE_STD_INDEX, COEF
+!
+      INTEGER               :: IERR
+      INTEGER               :: IX1, IY1, IX2, IY2, MCGRD1, MCGRD2
+!
+      CALL SWOUTP_LI( AC2, SPCSIG, SPCDIR, COMPDA,
+     &                XYTST,KGRPNT, XCGRID, YCGRID, OURQT )    
+!===========================THE TOTAL LOOP BEGIN===============================
+      DO Q=1,ASSI_NUMBER 
+         DO I=1,ASSI_CYCLE
+            CALL GET_4GRID( ASSI_LON(I,Q), ASSI_LAT(I,Q), 
+     &                      ASSI_NAMES(I,Q) )
+            IF( ABS(ASSI_LON_NEW-(-999.0)) .gt. 1.0 .AND. 
+     &          ABS(ASSI_LAT_NEW-(-999.0)) .gt. 1.0 .AND.
+     &          ABS(TDATA(I,Q)-(-999.0)) .gt. 1.0  .AND.
+     &          (TDATA(I,Q) .lt. 15.0) ) THEN
+               CALL GET_CLOSE_POINT( IX_1, IY_1, MASK )
+               CALL GET_OBSINCR( TDATA(I,Q) )
+               IF( ABS(HS_OBS_INCR) .GT. 0.01 .AND.
+     &             ABS(HS_OBS_INCR) .LE. 3 ) THEN 
+                  CALL GET_LINE(IX_1, IY_1, ASSI_GRID, MASK)
+                  DO 80 M=1,(ASSI_GRID*2)**2
+                    IF( ABS(LON_SUR(M)-(-999.0)) .GT. 1.0 .AND. 
+     &                  ABS(LAT_SUR(M)-(-999.0)) .GT. 1.0 .AND. 
+     &                  ABS(IS_SUR(M)-(-999))    .GT. 1.0 .AND. 
+     &                   (SATE_STD(IS_4(MASK)) .GT. 0)    .AND. 
+     &                   (SATE_STD(IS_SUR(M))  .GT. 0)  ) THEN  
+                         CALL GET_DISTANCE(ASSI_LON_NEW, ASSI_LAT_NEW,
+     &                                 LON_SUR(M),LAT_SUR(M), DISTANCE)
+                         HS_INCR=0.0
+                         SATE_STD_INDEX = 0.0
+                         COEF = 0
+                         IF( DISTANCE .LE. ASSI_RADIUS ) THEN
+                             SATE_STD_INDEX = SATE_STD(IS_SUR(M)) /
+     &                                        SATE_STD(IS_4(MASK))
+                             IF(MASK .EQ. 1) COEF = COEF1(IS_4(MASK),M) 
+                             IF(MASK .EQ. 2) COEF = COEF2(IS_4(MASK),M) 
+                             IF(MASK .EQ. 3) COEF = COEF3(IS_4(MASK),M) 
+                             IF(MASK .EQ. 4) COEF = COEF4(IS_4(MASK),M)
+                             HS_INCR = SATE_STD_INDEX * COEF * 
+     &                                 EXP(-(DISTANCE/ASSI_LENGTH) )
+     &                                 * HS_OBS_INCR
+!
+                             HS_AN(IS_SUR(M))=HS_AN(IS_SUR(M))+HS_INCR
+!
+                         ENDIF 
+                     ENDIF
+ 80               CONTINUE
+               ENDIF
+            ELSE 
+               IF(IAMMASTER) WRITE(*,"(10X)")
+               IF(IAMMASTER) WRITE(*,*) 'WARNING! this point is
+     & involid',ASSI_LON(I,Q), ASSI_LAT(I,Q),ASSI_NAMES(I,Q)
+               IF(IAMMASTER) WRITE(*,"(10X)")
+
+            ENDIF 
+         ENDDO 
+      ENDDO
+!
+      CALL SWSYNC
+      IF (STPNOW()) RETURN
+!
+      RETURN
+!
+!--------------------------------------------------------------------/
+      END SUBROUTINE GET_HS
+!--------------------------------------------------------------------/
+      SUBROUTINE GET_4GRID( ASSI_LON, ASSI_LAT, ASSI_NAMES )
+!
+       USE SWCOMM3,  ONLY: XPC, YPC, DX, DY, XCLEN, YCLEN
+       USE M_PARALL, ONLY: KGRPGL
+       USE ASSI_READY, ONLY : ASSI_LON_NEW, ASSI_LAT_NEW, MXS1,
+     &                        ASSI_NAMES_NEW, IX_4, IY_4, IS_4
+!     
+       IMPLICIT NONE
+!PARAMETER LIST
+       REAL,INTENT(IN)                     :: ASSI_LON, ASSI_LAT
+       CHARACTER(LEN=15),INTENT(IN)        :: ASSI_NAMES 
+!LOCAL PARAMETER
+       INTEGER :: IX(4),IY(4)
+       INTEGER :: K
+       REAL    :: LON_MAX, LAT_MAX
+!---------------------------------------------------------
+       IF( ABS(ASSI_LON) .LT. 0.01 .AND. ABS(ASSI_LAT) .LT. 0.01 ) THEN
+          ASSI_LON_NEW = -999.0
+          ASSI_LAT_NEW = -999.0
+          RETURN
+       ENDIF
+       LON_MAX = XPC + XCLEN 
+       LAT_MAX = YPC + YCLEN 
+       IF( ASSI_LON .LT. XPC .OR. ASSI_LON .GT. LON_MAX .OR. 
+     &     ASSI_LAT .LT. YPC .OR. ASSI_LAT .GT. LAT_MAX ) THEN
+          ASSI_LON_NEW = -999.0
+          ASSI_LAT_NEW = -999.0
+          RETURN
+       ENDIF
+       IX(1)=FLOOR( (ASSI_LON - XPC)/DX ) + 1
+       IY(1)=FLOOR( (ASSI_LAT - YPC)/DY ) + 1
+       IF( IX(1) .LE. 0 .OR. (IX(1)+1) .GT. INT((XCLEN+1)/DX)  .OR. 
+     &     IY(1) .LE. 0 .OR. (IY(1)+1) .GT. INT((YCLEN+1)/DY) ) THEN
+          ASSI_LON_NEW = -999.0
+          ASSI_LAT_NEW = -999.0
+          RETURN
+       ENDIF 
+       IX(2)=IX(1)+1
+       IX(3)=IX(1)+1
+       IX(4)=IX(1)
+       IY(2)=IY(1)
+       IY(3)=IY(1)+1
+       IY(4)=IY(1)+1
+       IF ( KGRPGL(IX(1),IY(1)) .EQ. 1 .AND. 
+     &      KGRPGL(IX(2),IY(2)) .EQ. 1 .AND. 
+     &      KGRPGL(IX(3),IY(3)) .EQ. 1 .AND. 
+     &      KGRPGL(IX(4),IY(4)) .EQ. 1    ) THEN
+          ASSI_LON_NEW = -999.0
+          ASSI_LAT_NEW = -999.0
+          RETURN
+       ENDIF
+       DO K=1,4
+          IX_4(K) = IX(K)
+          IY_4(K) = IY(K)
+          IS_4(K) =  (IY_4(K) - 1) * MXS1 + IX_4(K) 
+       ENDDO
+       ASSI_LON_NEW    = ASSI_LON
+       ASSI_LAT_NEW    = ASSI_LAT
+       ASSI_NAMES_NEW  = ASSI_NAMES
+!
+       RETURN
+!
+      END SUBROUTINE GET_4GRID
+!--------------------------------------------------------------------/
+      SUBROUTINE GET_CLOSE_POINT( IX1, IY1, MASK )
+!
+      USE SWCOMM3
+      USE MPI
+      USE ASSI_READY, ONLY : IX_4, IY_4, LON_4, LAT_4, 
+     &                       ASSI_LON_NEW, ASSI_LAT_NEW
+!
+      IMPLICIT NONE
+!
+      INTEGER         :: IX1, IY1, MASK
+!
+      REAL            :: DIS(4), RES
+      INTEGER         :: J
+!      
+      DO J=1,4
+         LON_4(J)        = XPC+REAL(IX_4(J)-1) * DX
+         LAT_4(J)        = YPC+REAL(IY_4(J)-1) * DY
+         CALL GET_DISTANCE( ASSI_LON_NEW,ASSI_LAT_NEW, 
+     &                      LON_4(J),LAT_4(J),DIS(J) )
+      ENDDO
+!
+      RES  = DIS(1)
+      MASK = 1
+      DO J=2,4
+         IF( DIS(J) .LT. RES ) THEN
+             RES  = DIS(J)
+             MASK = J
+         ENDIF
+      ENDDO  
+!
+      IX1=IX_4(MASK)
+      IY1=IY_4(MASK)
+!
+      RETURN
+!
+      END SUBROUTINE GET_CLOSE_POINT
+!--------------------------------------------------------------------/
+      SUBROUTINE GET_OBSINCR(TDATA)
+!
+      USE ASSI_READY, ONLY: HS_AN, IS_4, LON_4, LAT_4, HS_OBS_INCR, 
+     &                      ASSI_LON_NEW, ASSI_LAT_NEW
+      USE M_PARALL,   ONLY: INODE
+!
+      REAL TDATA
+!
+      INTEGER J
+      REAL  HS_GUESS(4), HS1, HS2, HS_OBS
+!
+      DO J=1,4
+         HS_GUESS(J)   = HS_AN(IS_4(J))
+      ENDDO
+! 
+      HS_OBS_INCR = 0.0
+      IF( HS_GUESS(1) .LT. 0.0  .OR.
+     &    HS_GUESS(2) .LT. 0.0  .OR.
+     &    HS_GUESS(3) .LT. 0.0  .OR.
+     &    HS_GUESS(4) .LT. 0.0  ) THEN
+          HS_OBS_INCR = 0.0
+      ELSE
+!
+          HS1= (ASSI_LON_NEW-LON_4(4)) / (LON_4(3)-LON_4(4))
+     &                   * HS_GUESS(3) +
+     &         (LON_4(3)-ASSI_LON_NEW) / (LON_4(3)-LON_4(4))
+     &                   * HS_GUESS(4) 
+          HS2= (ASSI_LON_NEW-LON_4(1)) / (LON_4(2)-LON_4(1))
+     &                   * HS_GUESS(2) +
+     &         (LON_4(2)-ASSI_LON_NEW) / (LON_4(2)-LON_4(1))
+     &                   * HS_GUESS(1)  
+          HS_OBS= (ASSI_LAT_NEW-LAT_4(2)) / (LAT_4(3)-LAT_4(2)) * HS1 +
+     &            (LAT_4(3)-ASSI_LAT_NEW) / (LAT_4(3)-LAT_4(2)) * HS2
+          HS_OBS_INCR   = TDATA - HS_OBS
+      ENDIF
+! 
+      END SUBROUTINE GET_OBSINCR
+!--------------------------------------------------------------------/
+      SUBROUTINE GET_LINE(IX, IY, INF_GRID, MASK)
+!
+       USE SWCOMM3,    ONLY: XPC, YPC, DX, DY, XCLEN, YCLEN
+       USE M_PARALL,   ONLY: IAMMASTER, INODE
+       USE ASSI_READY, ONLY: IX_LINE, IY_LINE, X_LINE_SUR, Y_LINE_SUR, 
+     &                       LON_SUR, LAT_SUR, IS_SUR, MXS1, MYS1
+!     
+       IMPLICIT NONE
+!/MPI INCLUDE "mpif.h"
+!PARAMETER LIST
+       INTEGER                :: IX, IY, INF_GRID, MASK
+!LOCAL PARAMETER
+       INTEGER                :: J, I, NUM1
+!
+       IF( (INF_GRID*2) .GE. MYS1 .OR.
+     &     (INF_GRID*2) .GE. MXS1 ) THEN
+          IF( IAMMASTER )  THEN    
+             WRITE(*,*) 'SORRY,THE INFLUENCE GRID IS TOO BIG'
+             WRITE(*,*) 'PLEASE GIVE A SMALLER INFLUENCE GRID'
+          ENDIF
+          RETURN
+       ENDIF
+!
+       IF(ALLOCATED(IX_LINE))   DEALLOCATE(IX_LINE)
+       IF(ALLOCATED(IY_LINE))   DEALLOCATE(IY_LINE)
+       ALLOCATE(  IX_LINE( INF_GRID*2 )  )
+       ALLOCATE(  IY_LINE( INF_GRID*2 )  )
+       IX_LINE = 0
+       IY_LINE = 0
+!
+       NUM1 = 0
+       IF( MASK .EQ. 2 .OR. MASK .EQ. 3 ) THEN 
+           DO I=-INF_GRID,(INF_GRID-1)
+              NUM1 = NUM1 + 1
+              IF( IX+I .GT. 0 .AND. IX+I .LE. MXS1 ) THEN
+                  IX_LINE(NUM1) = IX+I
+              ENDIF
+           ENDDO   
+       ELSEIF ( MASK .EQ. 1 .OR. MASK .EQ. 4 ) THEN 
+           DO I=-(INF_GRID-1),INF_GRID
+              NUM1 = NUM1 + 1
+              IF( IX+I .GT. 0 .AND. IX+I .LE. MXS1 ) THEN
+                  IX_LINE(NUM1) = IX+I
+              ENDIF
+           ENDDO
+       ENDIF
+!
+       NUM1 = 0
+       IF( MASK .EQ. 1 .OR. MASK .EQ. 2 ) THEN
+           DO I=-(INF_GRID-1),INF_GRID 
+              NUM1 = NUM1 + 1
+              IF( IY+I .GT. 0 .AND. IY+I .LE. MYS1 ) THEN
+                  IY_LINE(NUM1) = IY+I
+              ENDIF
+           ENDDO
+       ELSEIF( MASK .EQ. 3 .OR. MASK .EQ. 4 ) THEN 
+           DO I=-INF_GRID,(INF_GRID-1)
+              NUM1 = NUM1 + 1
+              IF( IY+I .GT. 0 .AND. IY+I .LE. MYS1 ) THEN
+                  IY_LINE(NUM1) = IY+I
+              ENDIF
+           ENDDO
+       ENDIF
+!
+       IF(ALLOCATED(X_LINE_SUR))  DEALLOCATE(X_LINE_SUR)
+       IF(ALLOCATED(Y_LINE_SUR))  DEALLOCATE(Y_LINE_SUR)
+       IF(ALLOCATED(LON_SUR))     DEALLOCATE(LON_SUR)
+       IF(ALLOCATED(LAT_SUR))     DEALLOCATE(LAT_SUR)
+       IF(ALLOCATED(IS_SUR))      DEALLOCATE(IS_SUR)
+
+       ALLOCATE( X_LINE_SUR( (INF_GRID*2)**2 )  )
+       ALLOCATE( Y_LINE_SUR( (INF_GRID*2)**2 )  )
+       ALLOCATE( LON_SUR( (INF_GRID*2)**2 )  )
+       ALLOCATE( LAT_SUR( (INF_GRID*2)**2 )  )
+       ALLOCATE( IS_SUR( (INF_GRID*2)**2 ) )
+       X_LINE_SUR = 0
+       Y_LINE_SUR = 0
+       LON_SUR    = -999.0
+       LAT_SUR    = -999.0
+       IS_SUR     = -999
+!
+       NUM1 = 0
+       DO I=1,INF_GRID*2
+          DO J=1,INF_GRID*2
+             NUM1 = NUM1 + 1
+             X_LINE_SUR(NUM1) = IX_LINE(J)
+             Y_LINE_SUR(NUM1) = IY_LINE(I)
+             IF( X_LINE_SUR(NUM1) .NE. 0 .AND. Y_LINE_SUR(NUM1) .NE. 0 )
+     &       THEN
+                 LON_SUR(NUM1) = XPC+REAL(X_LINE_SUR(NUM1)-1) * DX
+                 LAT_SUR(NUM1) = YPC+REAL(Y_LINE_SUR(NUM1)-1) * DY
+                 IS_SUR(NUM1)=X_LINE_SUR(NUM1)+(Y_LINE_SUR(NUM1)-1)*MXS1
+             ENDIF
+          ENDDO
+       ENDDO
+!
+      RETURN
+!
+      END SUBROUTINE GET_LINE
+!
+!--------------------------------------------------------------------/
+      SUBROUTINE GET_DISTANCE(LON_SUR,LAT_SUR,S_LON,S_LAT,DISTANCE)
+!--------------------------------------------------------------------/
+!
+          IMPLICIT NONE
+!PARAMETER LIST
+          REAL,INTENT(IN)                :: LON_SUR,LAT_SUR,S_LON,S_LAT
+          REAL,INTENT(INOUT)             :: DISTANCE
+!LOCAL PARAMETER
+          INTEGER             :: J
+          REAL                :: PI = 3.141592654
+          REAL                :: X1, Y1, TMP
+          REAL                :: X2, Y2
+!
+          X2 = S_LON * PI / 180.0
+          Y2 = S_LAT * PI / 180.0
+!
+          X1 = LON_SUR * PI / 180.0
+          Y1 = LAT_SUR * PI / 180.0
+          TMP= SIN(Y1) * SIN(Y2) + COS(Y1) * COS(Y2) * COS(X1-X2)
+          DISTANCE = 6371 * ACOS(TMP)
+!
+          RETURN
+!
+      END SUBROUTINE GET_DISTANCE
+!--------------------------------------------------------------------/
